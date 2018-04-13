@@ -1,0 +1,251 @@
+temp = commandArgs()
+startsite=(temp[2])
+stopsite=(temp[3])
+
+### Essential Functions ###
+MDpdf <- function(x, m, cv){  #### multi-dimensional probability density function ####
+  numer<-c()
+  denom<- (-0.5)* log(det(2*pi*(cv))) 
+  numer<-tryCatch((-1/2 * t(x-m) %*% (solve(cv)) %*% (x-m)) , error = function(e) e)
+  if (is.numeric(numer) == FALSE){
+    numer <- 0
+  } else {
+    numer <- numer 
+  }
+  f<-numer +denom   
+  f[is.na(f)] <-0
+  f[is.infinite(f)]<-0
+   return((f))
+}
+
+MDB<-function(Xi, priors, means, varcov, C){   ###### MDPDF + bayes to calculate membership matrix (m) ###### 
+  options(warn = -1)
+  inter<-c()
+    for (c in 1:C){
+    inter[c]<-MDpdf(Xi, means[c,], varcov[,,c])  + log(priors[c])
+  }
+   if (exp(inter[c]) == 0){
+    inter <- (inter-max(inter))
+  } else {
+    inter <- inter 
+  }
+  inter <-exp(inter)
+  output<-c()
+  for (i in 1:C){
+    output[i]<-((inter[i]) / (sum(inter)))
+  }
+  output
+  return(output)
+}
+
+##### Expectation maximisation function ##### 
+
+NSF<-function(data, InputMat, C = ncol(InputMat)) {
+  ###Breaking InputMat into membership matrix and priors (priors = wk: probability of any individual beloning to cluster 1:C)  
+  pdata<-InputMat[1:nrow(data),]     
+  priors<-c(InputMat[nrow(data)+1,])             
+  ###### Building K matrix (denoted Y in text: each row denotes mean matching of invidual i to and individual in cluster k) ##### 
+  kdata<-matrix(nrow = nrow(data), ncol = C)   
+  for (i in 1:nrow(data)){
+    for (c in 1:C){
+      kdata[i,c]<-sum((data[i,]*pdata[-i,c]))/
+        (sum(pdata[,c])-pdata[i,c])
+    }
+  }
+   #Calculate the means and covariances
+  means<-matrix(nrow = C, ncol = ncol(kdata))
+  for (c in 1:C){
+    for (j in 1:ncol(kdata))
+      means[c,j]<-(sum(pdata[,c]*kdata[,j]))/sum(pdata[,c]) 
+  }
+  varcov<-array(dim = c(ncol(kdata),ncol(kdata),C))
+  for (c in 1:C){
+    varcov[,,c]<-cov((kdata*pdata[,c]), (kdata*pdata[,c]))    
+  }
+  ####Recalculating the probabilities: membership matrix
+  pdata<-matrix(nrow = nrow(kdata), ncol = C)
+  for (i in 1:nrow(kdata)){
+    pdata[i,]<-MDB(kdata[i,], priors, means, varcov, C)
+  }
+  ####Recalculating the priors: wk
+  priors<-c()
+  for (c in 1:C){
+    priors[c]<-sum(pdata[,c])/nrow(data) 
+  }
+  ######LIKELIHOOD FUNCTION: calculating log likelihood of estimated paramters given data proxy kdata (Y) ########
+  PXi<-c()
+  PM<-matrix(NA ,nrow(data), C)
+  for (i in 1:nrow(kdata)){
+    for (c in 1:C){
+      PM[i,c]<- exp(MDpdf(kdata[i,], means[c,], varcov[,,c])) *priors[c]
+    }
+  }
+  for (i in 1:nrow(PM)){
+    PXi[i]<-log(sum(PM[i,]))  
+  }
+  Likelihood<-sum((PXi))
+  ####Rebuilding InputMat: matrix holds membership weightings, likelihood value and wk 
+  InputMat<-matrix(nrow = nrow(data)+2, ncol = C)
+  InputMat[1:nrow(data),]<-pdata #memberhip matrix m
+  InputMat[nrow(data)+1,]<-priors #wk
+  InputMat[nrow(data)+2,]<-Likelihood
+  return(InputMat)
+}
+
+########
+C<-3  #Assign a cluster number 
+
+for (D in startsite:stopsite){ #startsite and stopsite denote SNP region covered in a run
+  Input.File<-read.table(file=paste(,sep=''), sep=" ",  header= FALSE, skip = 2) #Inputting ChromoMatcher matrix
+  Input.File<-as.matrix(Input.File)
+  for (i in 1:length(RI)){
+    Input.File <-Input.File[which(Input.File[,2] != RI[i]),]
+  }
+  for (i in 1:length(RI)){
+    Input.File <-Input.File[which(Input.File[,1] != RI[i]),]
+  }
+  data<-matrix(nrow = ceiling(sqrt(nrow(Input.File))), ncol = floor(sqrt(nrow(Input.File))), data = as.numeric(Input.File[,3]), byrow = TRUE)
+  #Above, we produce an N by N-1 matrix of IBS matching between all pairwise chromosomes in the dataset as produced by ChromoMatcher
+  data<-log(data) #Data is logged 
+  data[is.infinite(data)]<-NA
+  data[is.na(data)]<-min(data, na.rm = TRUE)-2
+  
+  ###################### Iterations ######################
+  Results<-array(dim = c(nrow = nrow(data)+2, C, 15)) 
+  #Results = Output matrix that will hold final membership matrices, priors (wk) and corresponding likelihood scores
+  #Repeated 15 times for 15 convergent likelihood values 
+  for (r in 1:15){
+    repeat{
+      input<-matrix(nrow = nrow(data)+2, ncol = C) #Generating initial random membership matrix
+      for (ii in 1:nrow(data)){
+        input[ii,]<-(runif(C,0,1))
+        input[ii,]<-input[ii,]/sum(input[ii,])
+      }
+      for (cc in 1:C){
+        input[nrow(data)+1,cc] <-sum(input[1:nrow(data),cc])/nrow(data) 
+      }
+      
+      # OUTPUTA #
+      outputa<-array(dim = c(nrow(data)+2, C, 25), data = rep(0))
+      # outputa holds each of the 25 itteration outputs 
+      outputa[,,1]<-NSF(data,input)
+      for (c in 2:25){
+        outputa[,,c]<-NSF(data,outputa[,,c-1]) #Use EM function (NSF) to recalculate new values
+        if (outputa[nrow(data)+2,1,c] == 0) break
+        for (k in 1:C){
+          if (outputa[nrow(data)+1,k,c] == 0) break
+        }
+      } 
+      for (c in 4:25){
+        if (outputa[nrow(data)+2,1,c] == outputa[nrow(data)+2,1,c-1]) {
+          #If likelihood values converge, itterations stop 
+          outputa[,,c:25] <- outputa[,,c]
+        }
+      }
+      #OUTCOME#
+      outcome<-matrix(nrow = 1+C, ncol = 25)
+      for (out in 1:25){
+        outcome[1:C,out]<-outputa[nrow(data)+1,,out]
+        outcome[C+1,out]<-outputa[nrow(data)+2,1,out]
+      }
+      outcome
+      # BREAK OUT #
+      if (outcome[C+1,25] == outcome[C+1,24] & outcome[1,25] > 1/nrow(data) & outcome[2,25] > 1/nrow(data)
+          & outcome[3,25] > 1/nrow(data)) 
+      {
+        Results[,,r] <- outputa[,,25]
+      }
+      if (outcome[C+1,25] == outcome[C+1,24] & outcome[1,25] > 1/nrow(data) & outcome[2,25] > 1/nrow(data)
+          & outcome[3,25] > 1/nrow(data)) break    
+    }
+  }
+  ###################### Scoring ######################
+  LLs<-c()
+  for (r in 1:15){
+    LLs[r]<-Results[nrow(data)+2,1,r]
+  }
+  maxLLs<-which(LLs == max(LLs))
+  FinGroup<-Results[,,maxLLs[1]]
+  #Selecting model with highest likelihood score
+  data<-exp(data) #returning data to original form before analysis of clusters
+  data[which(data == min(data))]<-0
+  #Start by calculating mean of each cluster 
+  HardCluster<-round(FinGroup[1:nrow(data),])
+  ClusData<-matrix(nrow = nrow(data), ncol = C)   
+  for (i in 1:nrow(data)){
+    for (c in 1:C){
+      ClusData[i,c]<-sum(((data[i,])*HardCluster[-i,c]))/
+        (sum(HardCluster[,c])-HardCluster[i,c])
+    }
+  }
+  #Score 1 
+  #mean within the subset of matching to individuals within subset 
+  ClusterMeans<-c()
+  for(c in 1:C){
+    ClusterMeans[c]<- sum(HardCluster[,c]*ClusData[,c]) / sum(HardCluster[,c])
+  }
+  #Score 2 
+  #mean within subset of the sum of matching to individuals across whole population
+  CMeansWP<-c()
+  for( c in 1:C){
+    CMeansWP[c]<- sum(data[which(HardCluster[,c] == 1),]) / (sum(HardCluster[,c])*nrow(data))
+  }
+  #Calculating Medians#
+  ClustersA<-array(dim = c(nrow(data), ncol(data), C), NA)
+  for (c in 1:C){
+    cluster<-which(HardCluster[,c] == 1)
+    clusterk<-matrix(nrow = length(cluster), ncol = length(cluster)-1)
+    for (t in 1:length(cluster)){
+      g1b<-cluster[-t]
+      for (q in 1:length(g1b)){
+        if (g1b[q]>cluster[t]){
+          g1b[q]<-(g1b[q]-1)
+        } 
+      }
+      vec<-c(data[cluster[t],g1b])
+      clusterk[t,]<-vec
+    } 
+    ClustersA[1:length(cluster),1:(length(cluster)-1),c] <- clusterk
+  }
+  ## ClusterMedians ##
+  ClusterMedians<-c()
+  for (c in 1:C){
+    ClusterMedians[c]<-median(c(na.omit(ClustersA[1:sum(HardCluster[,c]),1:sum(HardCluster[,c])-1,c])))
+  }
+  WeightedMedians<-c()
+  for (c in 1:C){
+    WeightedMedians[c] <-  ClusterMedians[c] * sum(HardCluster[,c])/nrow(data) 
+  }
+  ## Score 4: median from ClusData ##
+  WeightedKMedian<-c()
+  for (c in 1:C){
+    WeightedKMedian[c]<- sum(HardCluster[,c])/nrow(data) * median(ClusData[which(HardCluster[,c] == 1),c])
+  }
+  ## Variance of each cluster##
+  Var<-c()
+  for (c in 1:C){
+    Var[c]<-var(ClusData[which(HardCluster[,c] == 1),c])
+  }
+  ## BIC (Bayes information criterion) ##
+  LL<-FinGroup[nrow(data)+2,1]
+  BIC<-(log(nrow(data))*C) - (2 * LL)
+  ScoreOutput<-matrix(nrow = C, ncol = 12) #Matrix containing scores and other output information
+  colnames(ScoreOutput)<-c("Group Size", "Cluster Means", "Mean comp: Whole pop", "Cluster Medians", "Weighted Median", "Weighted K-Median", "Variance", "Data-Mean", "Data Median", "Var-Data", "Log-Likelihood", "BIC")
+  for (c in 1:C){
+    ScoreOutput[c,1]<-sum(HardCluster[,c])
+  }
+  ScoreOutput[,2]<-c(ClusterMeans)
+  ScoreOutput[,3]<-c(CMeansWP)
+  ScoreOutput[,4]<-c(ClusterMedians)
+  ScoreOutput[,5]<-c(WeightedMedians)
+  ScoreOutput[,6]<-c(WeightedKMedian)
+  ScoreOutput[,7]<-Var
+  ScoreOutput[1,8]<-mean(data)
+  ScoreOutput[1,9]<-median(data)
+  ScoreOutput[1,10]<-(sd(data))^2
+  ScoreOutput[1,11]<-LL
+  ScoreOutput[1,12]<-BIC
+  ################ Writing Table to File ################ 
+  Cluster.Allocations<-HardCluster[,rank(ClusterMeans)] #Matrix with final memberships of individuals 1:N to clusters 1:C
+  write.table(ScoreOutput, file = paste("Output Location"), sep="\t")
+  write.table(Cluster.Allocations, file = paste("Output Location",sep = ''), sep="\t")
